@@ -79,10 +79,10 @@ double opt3001_get_data(I2C_Handle *i2c) {
 	// JTKJ: Fill in the i2cMessage data structure with correct values
     //       as shown in the lecture material
     I2C_Transaction i2cMessage;
-    i2cMessage.slaveAddress = Board_OPT001_ADDR;
+    i2cMessage.slaveAddress = Board_OPT3001_ADDR;
     i2cMessage.writeBuf = txBuffer;
     i2cMessage.writeCount = 1;
-    i2cMessage.readBuf = txBuffer;
+    i2cMessage.readBuf = rxBuffer;
     i2cMessage.readCount = 2;
 
     txBuffer[0] = OPT3001_REG_RESULT;
