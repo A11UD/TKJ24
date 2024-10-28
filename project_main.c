@@ -1,232 +1,215 @@
-/* C Standard library */
+/* Includes */
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
-/* XDCtools files */
 #include <xdc/std.h>
 #include <xdc/runtime/System.h>
-
-/* BIOS Header files */
 #include <ti/sysbios/BIOS.h>
 #include <ti/sysbios/knl/Clock.h>
 #include <ti/sysbios/knl/Task.h>
 #include <ti/drivers/PIN.h>
-#include <ti/drivers/pin/PINCC26XX.h>
-#include <ti/drivers/I2C.h>
-#include <ti/drivers/Power.h>
-#include <ti/drivers/power/PowerCC26XX.h>
 #include <ti/drivers/UART.h>
-
-/* Board Header files */
 #include "Board.h"
-#include "sensors/opt3001.h"
 
-/* Task */
+/* Constants */
 #define STACKSIZE 2048
-Char sensorTaskStack[STACKSIZE];
-Char uartTaskStack[STACKSIZE];
+#define ACC_THRESHOLD 0.1 // Define a threshold for motion detection
+#define NUM_SAMPLES 50 // Number of samples to read for motion analysis
 
-// JTKJ: Teht�v� 3. Tilakoneen esittely
-// JTKJ: Exercise 3. Definition of the state machine
-enum state { WAITING=1, DATA_READY };
-enum state programState = WAITING;
+Char uartSendTaskStack[STACKSIZE];
+Char uartReceiveTaskStack[STACKSIZE];
 
-// JTKJ: Teht�v� 3. Valoisuuden globaali muuttuja
-// JTKJ: Exercise 3. Global variable for ambient light
-double ambientLight = -1000.0;
-char lightString[32];
+/* Global Variables */
+float accelData[NUM_SAMPLES][7];
+float readInterval = 0.1;
+char morseMessage[100] = "";   
+char receivedMessage[100] = ""; 
 
-// JTKJ: Teht�v� 1. Lis�� painonappien RTOS-muuttujat ja alustus
+/* States */
+typedef enum { INTERFACE, GET_CODE, SEND_CODE, RECEIVE_CODE, PRINT_RECEIVED, OFF, READING_DATA, RECEIVING_DATA } State;
+State currentState = INTERFACE;
+
+/* Button and LED Configuration */
 static PIN_Handle buttonHandle;
 static PIN_State buttonState;
 static PIN_Handle ledHandle;
 static PIN_State ledState;
 
 PIN_Config buttonConfig[] = {
-   Board_BUTTON0  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE,
-   PIN_TERMINATE
+    Board_BUTTON0 | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE, // Button 0: Start/Stop reading data
+    Board_BUTTON1 | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE, // Button 1: On/Off switch
+    PIN_TERMINATE
 };
 
 PIN_Config ledConfig[] = {
-   Board_LED0 | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX,
-   PIN_TERMINATE
+    Board_LED0 | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX, // Green LED
+    Board_LED1 | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX, // Red LED
+    PIN_TERMINATE
 };
-// JTKJ: Exercise 1. Add pins RTOS-variables and configuration here
 
-void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
-    uint_t pinValue = PIN_getOutputValue( Board_LED0 );
-    pinValue = !pinValue;
-    PIN_setOutputValue( ledHandle, Board_LED0, pinValue );
-    // JTKJ: Teht�v� 1. Vilkuta jompaa kumpaa ledi�
-    // JTKJ: Exercise 1. Blink either led of the device
-}
+/* Function Prototypes */
+Void uartSendTask(UArg arg0, UArg arg1);
+Void uartReceiveTask(UArg arg0, UArg arg1);
+void buttonCallback(PIN_Handle handle, PIN_Id pinId);
+void analyzeMotion(float accelData[][7], int sampleCount);
+void collectSensorData();
 
 /* Task Functions */
-Void uartTaskFxn(UArg arg0, UArg arg1) {
-
-    // JTKJ: Teht�v� 4. Lis�� UARTin alustus: 9600,8n1
-    // JTKJ: Exercise 4. Setup here UART connection as 9600,8n1
+Void uartSendTask(UArg arg0, UArg arg1) {
     UART_Handle uart;
     UART_Params uartParams;
 
-    // Alustetaan sarjaliikenne
     UART_Params_init(&uartParams);
     uartParams.writeDataMode = UART_DATA_TEXT;
     uartParams.readDataMode = UART_DATA_TEXT;
-    uartParams.readEcho = UART_ECHO_OFF;
-    uartParams.readMode = UART_MODE_BLOCKING;
     uartParams.baudRate = 9600;
-    uartParams.dataLength = UART_LEN_8;
-    uartParams.parityType = UART_PAR_NONE;
-    uartParams.stopBits = UART_STOP_ONE;
+    uartParams.readEcho = UART_ECHO_OFF;
 
-    // Avataan yhteys laitteen sarjaporttiin vakiossa Board_UART0
     uart = UART_open(Board_UART0, &uartParams);
     if (uart == NULL) {
-        System_abort("Error in opening UART");
+        System_abort("Error opening UART");
     }
 
-
     while (1) {
-
-        // JTKJ: Teht�v� 3. Kun tila on oikea, tulosta sensoridata merkkijonossa debug-ikkunaan
-        //       Muista tilamuutos
-        // JTKJ: Exercise 3. Print out sensor data as string to debug window if the state is correct
-        //       Remember to modify state
-
-        if(programState == DATA_READY) {
-            UART_write(uart, lightString, strlen(lightString));
-            programState = WAITING;
-        }
-        // JTKJ: Teht�v� 4. L�het� sama merkkijono UARTilla
-        // JTKJ: Exercise 4. Send the same sensor data string with UART
-
-        // Just for sanity check for exercise, you can comment this out
-        System_printf("uartTask\n");
+        System_printf("Sanity Check: uartSendTask loop entered\n");
         System_flush();
 
-        // Once per second, you can modify this
-        Task_sleep(1000000 / Clock_tickPeriod);
+        if (currentState == READING_DATA) {
+            // Example Morse code message; replace with actual analysis
+            strcpy(morseMessage, ".- .- ... ..");
+            UART_write(uart, morseMessage, strlen(morseMessage));
+            UART_write(uart, "   ", 3); // End message with three spaces
+        }
+        Task_sleep(5000000 / Clock_tickPeriod); // 5 seconds
     }
 }
 
-Void sensorTaskFxn(UArg arg0, UArg arg1) {
+Void uartReceiveTask(UArg arg0, UArg arg1) {
+    UART_Handle uart;
+    UART_Params uartParams;
 
-    I2C_Handle i2c;
-    I2C_Params i2cParams;
+    UART_Params_init(&uartParams);
+    uartParams.writeDataMode = UART_DATA_TEXT;
+    uartParams.readDataMode = UART_DATA_TEXT;
+    uartParams.baudRate = 9600;
+    uartParams.readEcho = UART_ECHO_OFF;
 
-    // JTKJ: Teht�v� 2. Avaa i2c-v�yl� taskin k�ytt��n
-    // JTKJ: Exercise 2. Open the i2c bus
-    //I2C_Transaction i2cMessage;
-    // Alustetaan väylä
-    I2C_Params_init(&i2cParams);
-    i2cParams.bitRate = I2C_400kHz;
-
-    // Avataan yhteys
-    i2c = I2C_open(Board_I2C_TMP, &i2cParams);
-    if (i2c == NULL) {
-        System_abort("Error on initializing I2C");
-
+    uart = UART_open(Board_UART0, &uartParams);
+    if (uart == NULL) {
+        System_abort("Error opening UART");
     }
 
-    Task_sleep(100000 / Clock_tickPeriod);
-    opt3001_setup(&i2c);
-
-
-
-    // JTKJ: Teht�v� 2. Alusta sensorin OPT3001 setup-funktiolla
-    //       Laita enne funktiokutsua eteen 100ms viive (Task_sleep)
-    // JTKJ: Exercise 2. Setup the OPT3001 sensor for use
-    //       Before calling the setup function, insertt 100ms delay with Task_sleep
-
     while (1) {
-
-        // JTKJ: Teht�v� 2. Lue sensorilta dataa ja tulosta se Debug-ikkunaan merkkijonona
-        // JTKJ: Exercise 2. Read sensor data and print it to the Debug window as string
-        // JTKJ: Teht�v� 3. Tallenna mittausarvo globaaliin muuttujaan
-        //       Muista tilamuutos
-        // JTKJ: Exercise 3. Save the sensor value into the global variable
-        //       Remember to modify state
-        if(programState == WAITING) {
-            ambientLight = opt3001_get_data(&i2c);
-            sprintf(lightString, "%.2f ", ambientLight);
-            System_printf(lightString);
-            programState = DATA_READY;
-        }
-
-        // Just for sanity check for exercise, you can comment this out
-        System_printf("sensorTask\n");
+        System_printf("Sanity Check: uartReceiveTask loop entered\n");
         System_flush();
 
-        // Once per second, you can modify this
-        Task_sleep(1000000 / Clock_tickPeriod);
+        if (currentState == RECEIVING_DATA) {
+            int bytesRead = UART_read(uart, receivedMessage, sizeof(receivedMessage) - 1);
+            if (bytesRead > 0) {
+                receivedMessage[bytesRead] = '\0';
+                System_printf("Received Morse Code: %s\n", receivedMessage);
+                System_flush();
+            }
+        }
+        Task_sleep(1000000 / Clock_tickPeriod); // 1 second
+    }
+}
+
+void analyzeMotion(float accelData[][7], int sampleCount) {
+    // Example implementation of motion analysis based on accelerometer data
+    for (int i = 0; i < sampleCount; i++) {
+        float ax = accelData[i][1]; // x-axis acceleration
+        float ay = accelData[i][2]; // y-axis acceleration
+        float az = accelData[i][3]; // z-axis acceleration
+
+        // Check for motion detection
+        if (fabs(ax) > ACC_THRESHOLD || fabs(ay) > ACC_THRESHOLD) {
+            // Implement your command recognition logic here
+            System_printf("Motion detected at sample %d: ax=%f, ay=%f\n", i, ax, ay);
+            System_flush();
+            // Example: update morseMessage based on detected motion
+        }
+    }
+}
+
+void collectSensorData() {
+    // Simulated function for reading data from the MPU9250
+    // Fill the accelData array with new sensor readings
+    // Replace this with actual sensor reading logic
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        accelData[i][0] = i * readInterval; // Time stamp
+        accelData[i][1] = (rand() % 200 - 100) / 1000.0; // Simulated random acceleration x
+        accelData[i][2] = (rand() % 200 - 100) / 1000.0; // Simulated random acceleration y
+        accelData[i][3] = -1.0; // Gravity, z-axis (static)
+    }
+
+    analyzeMotion(accelData, NUM_SAMPLES);
+}
+
+void buttonCallback(PIN_Handle handle, PIN_Id pinId) {
+    if (pinId == Board_BUTTON0) {
+        System_printf("Button 0 pressed\n");
+        System_flush();
+
+        if (currentState == OFF) {
+            currentState = READING_DATA;
+            PIN_setOutputValue(ledHandle, Board_LED0, 1); // Green LED on
+            PIN_setOutputValue(ledHandle, Board_LED1, 0); // Red LED off
+            collectSensorData(); // Start collecting data
+        } else if (currentState == READING_DATA) {
+            currentState = RECEIVING_DATA;
+            PIN_setOutputValue(ledHandle, Board_LED0, 0); // Green LED off
+            PIN_setOutputValue(ledHandle, Board_LED1, 1); // Red LED on
+        }
+    } else if (pinId == Board_BUTTON1) {
+        System_printf("Button 1 pressed\n");
+        System_flush();
+
+        currentState = OFF;
+        PIN_setOutputValue(ledHandle, Board_LED0, 0);
+        PIN_setOutputValue(ledHandle, Board_LED1, 0);
     }
 }
 
 Int main(void) {
-
-    // Task variables
-    Task_Handle sensorTaskHandle;
-    Task_Params sensorTaskParams;
-    Task_Handle uartTaskHandle;
-    Task_Params uartTaskParams;
-
-    // Initialize board
-    Board_initGeneral();
-
-    
-    // JTKJ: Teht�v� 2. Ota i2c-v�yl� k�ytt��n ohjelmassa
-    // JTKJ: Exercise 2. Initialize i2c bus
-    Board_initI2C();
-
-
-    // JTKJ: Teht�v� 4. Ota UART k�ytt��n ohjelmassa
-    // JTKJ: Exercise 4. Initialize UART
-    Board_initUART();
-
-    // JTKJ: Teht�v� 1. Ota painonappi ja ledi ohjelman k�ytt��n
-    //       Muista rekister�id� keskeytyksen k�sittelij� painonapille
-
-    ledHandle = PIN_open( &ledState, ledConfig );
-    if(!ledHandle) {
-       System_abort("Error initializing LED pin\n");
-    }
-
-    // Painonappi käyttöön ohjelmassa
-    buttonHandle = PIN_open(&buttonState, buttonConfig);
-    if(!buttonHandle) {
-       System_abort("Error initializing button pin\n");
-    }
-
-    // Painonapille keskeytyksen käsittellijä
-    if (PIN_registerIntCb(buttonHandle, &buttonFxn) != 0) {
-       System_abort("Error registering button callback function");
-    }
-
-    /* Task */
-    Task_Params_init(&sensorTaskParams);
-    sensorTaskParams.stackSize = STACKSIZE;
-    sensorTaskParams.stack = &sensorTaskStack;
-    sensorTaskParams.priority=2;
-    sensorTaskHandle = Task_create(sensorTaskFxn, &sensorTaskParams, NULL);
-    if (sensorTaskHandle == NULL) {
-        System_abort("Task create failed!");
-    }
-
-    Task_Params_init(&uartTaskParams);
-    uartTaskParams.stackSize = STACKSIZE;
-    uartTaskParams.stack = &uartTaskStack;
-    uartTaskParams.priority=2;
-    uartTaskHandle = Task_create(uartTaskFxn, &uartTaskParams, NULL);
-    if (uartTaskHandle == NULL) {
-        System_abort("Task create failed!");
-    }
-
-    /* Sanity check */
-    System_printf("Hello world!\n");
+    System_printf("Sanity Check: Entering main function\n");
     System_flush();
 
-    /* Start BIOS */
+    Board_initGeneral();
+    Board_initUART();
+
+    ledHandle = PIN_open(&ledState, ledConfig);
+    if (!ledHandle) {
+        System_abort("Error initializing LED pins");
+    }
+
+    buttonHandle = PIN_open(&buttonState, buttonConfig);
+    if (!buttonHandle) {
+        System_abort("Error initializing button pins");
+    }
+
+    if (PIN_registerIntCb(buttonHandle, buttonCallback) != 0) {
+        System_abort("Error registering button callback");
+    }
+
+    Task_Params uartSendTaskParams;
+    Task_Params_init(&uartSendTaskParams);
+    uartSendTaskParams.stackSize = STACKSIZE;
+    uartSendTaskParams.stack = &uartSendTaskStack;
+    uartSendTaskParams.priority = 1;
+    Task_create(uartSendTask, &uartSendTaskParams, NULL);
+
+    Task_Params uartReceiveTaskParams;
+    Task_Params_init(&uartReceiveTaskParams);
+    uartReceiveTaskParams.stackSize = STACKSIZE;
+    uartReceiveTaskParams.stack = &uartReceiveTaskStack;
+    uartReceiveTaskParams.priority = 2;
+    Task_create(uartReceiveTask, &uartReceiveTaskParams, NULL);
+
+    System_printf("Sanity Check: Starting BIOS\n");
+    System_flush();
+
     BIOS_start();
 
     return (0);
