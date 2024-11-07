@@ -123,7 +123,7 @@ void readByte(uint8_t reg, uint8_t count, uint8_t *data) {
 }
 
 void delay(uint16_t delay) {
-
+    // Sleeps for time of delay(ms)
 	Task_sleep(delay*1000 / Clock_tickPeriod);
 }
 
@@ -132,7 +132,7 @@ void getGres() {
   switch (Gscale) {
  		// Possible gyro scales (and their register bit settings) are:
 		// 250 DPS (00), 500 DPS (01), 1000 DPS (10), and 2000 DPS  (11).
-        // Here's a bit of an algorith to calculate DPS/(ADC tick) based on that 2-bit value:
+        // Here's a bit of an algorithm to calculate DPS/(ADC tick) based on that 2-bit value:
     case GFS_250DPS:
           gRes = 250.0/32768.0;
           break;
@@ -153,7 +153,7 @@ void getAres() {
   switch (Ascale) {
   	  	  // Possible accelerometer scales (and their register bit settings) are:
   	  	  // 2 Gs (00), 4 Gs (01), 8 Gs (10), and 16 Gs  (11).
-  	  	  // Here's a bit of an algorith to calculate DPS/(ADC tick) based on that 2-bit value:
+  	  	  // Here's a bit of an algorithm to calculate DPS/(ADC tick) based on that 2-bit value:
     case AFS_2G:
           aRes = 2.0/32768.0;
           break;
