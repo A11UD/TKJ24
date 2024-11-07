@@ -24,7 +24,7 @@
 
 // Task variables
 #define STACKSIZE 2048
-Char sensorTaskStack[STACKSIZE];
+Char mpuTaskStack[STACKSIZE];
 Char uartTaskStack[STACKSIZE];
 
 // Definition of the state machine
@@ -32,11 +32,15 @@ enum state {INTERFACE = 1, SENDING_DATA, OFF, READING_DATA, RECEIVING_DATA};
 enum state programState = INTERFACE;
 
 // Global variable for ambient light
-#define NUM_SAMPLES 50 // Number of samples to read for motion analysis
+#define NUM_SAMPLES 20 // Number of samples to read for motion analysis
+#define AVG_WIN_SIZE 10 // Window size for calculation averages
+#define CLOCK_PERIOD 10 // Clock task interrupt period in milliseconds
 
+float rawData[6][AVG_WIN_SIZE];
 float motionData[6][NUM_SAMPLES];
 char debugString[1000];
 uint8_t dataIndex = 0;
+uint8_t rawDataIndex = 0;
 uint32_t time = 0;
 
 // Add pins RTOS-variables and configuration here
@@ -68,6 +72,22 @@ static const I2CCC26XX_I2CPinCfg i2cMPUCfg = {
     .pinSDA = Board_I2C0_SDA1,
     .pinSCL = Board_I2C0_SCL1
 };
+
+void movavg(float *fromArray, float *destArray) {
+    uint8_t i = 0;
+    float avg = 0;
+    while (i < AVG_WIN_SIZE) {
+        avg += fromArray[i];
+        i++;
+   }
+    destArray[dataIndex] = avg / AVG_WIN_SIZE;
+}
+
+Void clkFxn(UArg arg0) {
+   // Clock tick = 10us
+   time = Clock_getTicks() / 100; // Time in milliseconds
+}
+
 
 void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
     if (pinId == Board_BUTTON0) {
@@ -117,11 +137,11 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
         }
 
         // Once per second, you can modify this
-        delay(100);
+        delay(1);
     }
 }
 
-Void sensorTaskFxn(UArg arg0, UArg arg1) {
+Void mpuTaskFxn(UArg arg0, UArg arg1) {
 
     // RTOS i2c-variables initialization
     I2C_Handle i2cMPU;
@@ -160,37 +180,52 @@ Void sensorTaskFxn(UArg arg0, UArg arg1) {
         // Read sensor data and print it to the Debug window as string
         // Save the sensor value into the global variable and modify state
         if(programState == READING_DATA) {
-            mpu9250_get_data(&i2cMPU, &motionData[0][dataIndex],
-                             &motionData[1][dataIndex],
-                             &motionData[2][dataIndex],
-                             &motionData[3][dataIndex],
-                             &motionData[4][dataIndex],
-                             &motionData[5][dataIndex]);
-            sprintf(debugString, "Time:%d, index:%d, Data: [%.2f %.2f %.2f %.2f %.2f %.2f]\n\r", time, dataIndex, motionData[0][dataIndex],
-                        motionData[1][dataIndex],
-                        motionData[2][dataIndex],
-                        motionData[3][dataIndex],
-                        motionData[4][dataIndex],
-                        motionData[5][dataIndex]);
-            if (PIN_getOutputValue(Board_LED0)) {
-                programState = SENDING_DATA;
+            mpu9250_get_data(&i2cMPU, &rawData[0][rawDataIndex],
+                             &rawData[1][rawDataIndex],
+                             &rawData[2][rawDataIndex],
+                             &rawData[3][rawDataIndex],
+                             &rawData[4][rawDataIndex],
+                             &rawData[5][rawDataIndex]);
+            rawDataIndex = (rawDataIndex + 1) % AVG_WIN_SIZE;
+            if (rawDataIndex == 0) {
+                uint8_t i = 0;
+                for(;i < 6; i++) {
+                    movavg(rawData[i],motionData[i]);
+                }
+                /*
+                sprintf(debugString, "Time:%d, index:%d, Data: %.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n\r", time, dataIndex, motionData[0][dataIndex],
+                            motionData[1][dataIndex],
+                            motionData[2][dataIndex],
+                            motionData[3][dataIndex],
+                            motionData[4][dataIndex],
+                            motionData[5][dataIndex]);
+                */
+                sprintf(debugString, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n\r", time, motionData[0][dataIndex],
+                            motionData[1][dataIndex],
+                            motionData[2][dataIndex],
+                            motionData[3][dataIndex],
+                            motionData[4][dataIndex],
+                            motionData[5][dataIndex]);
+                if (PIN_getOutputValue(Board_LED0)) {
+                    programState = SENDING_DATA;
+                }
+                dataIndex = (dataIndex + 1) % NUM_SAMPLES;
             }
-            time += 10;
-            dataIndex = (dataIndex + 1) % NUM_SAMPLES;
         }
 
-        // Once per second, you can modify this
-        delay(100);
+        delay(1); // Sleep 10ms
     }
 }
 
 Int main(void) {
 
     // Task variables
-    Task_Handle sensorTaskHandle;
-    Task_Params sensorTaskParams;
+    Task_Handle mpuTaskHandle;
+    Task_Params mpuTaskParams;
     Task_Handle uartTaskHandle;
     Task_Params uartTaskParams;
+    Clock_Handle clkHandle;
+    Clock_Params clkParams;
 
     // Initialize board
     Board_initGeneral();
@@ -201,41 +236,53 @@ Int main(void) {
     // Initialize UART
     Board_initUART();
 
+    // Initialize clock
+    Clock_Params_init(&clkParams);
+    // 1 000 000 = s
+    clkParams.period = (CLOCK_PERIOD*1000) / Clock_tickPeriod;
+    clkParams.startFlag = TRUE;
+
     // Open LED handle
     ledHandle = PIN_open(&ledState, ledConfig);
     if(!ledHandle) {
        System_abort("Error initializing LED pin\n");
     }
 
-    // Open button handle
+    // Create clock handle
+    clkHandle = Clock_create((Clock_FuncPtr)clkFxn, clkParams.period, &clkParams, NULL);
+    if (clkHandle == NULL) {
+       System_abort("Clock create failed");
+    }
+
+    // Create button handle
     buttonHandle = PIN_open(&buttonState, buttonConfig);
     if(!buttonHandle) {
        System_abort("Error initializing button pin\n");
     }
 
-    // Open interrupt button handle
+    // Create interrupt button handle
     if (PIN_registerIntCb(buttonHandle, &buttonFxn) != 0) {
        System_abort("Error registering button callback function");
     }
 
-    // Initialize sensor task parameters
-    Task_Params_init(&sensorTaskParams);
-    sensorTaskParams.stackSize = STACKSIZE;
-    sensorTaskParams.stack = &sensorTaskStack;
-    sensorTaskParams.priority = 2;
-    sensorTaskHandle = Task_create(sensorTaskFxn, &sensorTaskParams, NULL);
-    if (sensorTaskHandle == NULL) {
-        System_abort("Task create failed!");
+    // Initialize MPU task parameters and create MPU task handle
+    Task_Params_init(&mpuTaskParams);
+    mpuTaskParams.stackSize = STACKSIZE;
+    mpuTaskParams.stack = &mpuTaskStack;
+    mpuTaskParams.priority = 2;
+    mpuTaskHandle = Task_create(mpuTaskFxn, &mpuTaskParams, NULL);
+    if (mpuTaskHandle == NULL) {
+        System_abort("MPU Task creation failed!");
     }
 
-    // Initialize UART task parameters
+    // Initialize UART task parameters and create UART task handle
     Task_Params_init(&uartTaskParams);
     uartTaskParams.stackSize = STACKSIZE;
     uartTaskParams.stack = &uartTaskStack;
     uartTaskParams.priority = 2;
     uartTaskHandle = Task_create(uartTaskFxn, &uartTaskParams, NULL);
     if (uartTaskHandle == NULL) {
-        System_abort("Task create failed!");
+        System_abort("UART Task creation failed!");
     }
 
     // Sanity check
