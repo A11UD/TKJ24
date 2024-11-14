@@ -21,11 +21,13 @@
 /* Board Header files */
 #include "Board.h"
 #include "sensors/mpu9250.h"
+#include "buzzer.h"
 
 // Task variables
 #define STACKSIZE 2048
 Char mpuTaskStack[STACKSIZE];
 Char uartTaskStack[STACKSIZE];
+Char buzzerStack[STACKSIZE];
 
 // Definition of the state machine
 enum state {INTERFACE = 1, SENDING_DATA, OFF, READING_DATA, RECEIVING_DATA};
@@ -36,19 +38,30 @@ enum state programState = INTERFACE;
 #define AVG_WIN_SIZE 10 // Window size for calculation averages
 #define CLOCK_PERIOD 10 // Clock task interrupt period in milliseconds
 
+uint8_t uartBuffer[300];
 float rawData[6][AVG_WIN_SIZE];
 float motionData[6][NUM_SAMPLES];
 char debugString[1000];
 uint8_t dataIndex = 0;
 uint8_t rawDataIndex = 0;
 uint32_t time = 0;
+uint16_t buzzerFreq = 100;
+uint16_t buzzerDelay = 500;
 
-// Add pins RTOS-variables and configuration here
+
+// pins RTOS-variables and configuration here
 static PIN_Handle buttonHandle;
 static PIN_State buttonState;
 static PIN_Handle ledHandle;
 static PIN_State ledState;
 static PIN_Handle mpuHandle;
+static PIN_Handle hBuzzer;
+static PIN_State sBuzzer;
+
+PIN_Config cBuzzer[] = {
+  Board_BUZZER | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX,
+  PIN_TERMINATE
+};
 
 PIN_Config mpuPinConfig[] = {
     Board_MPU_POWER | PIN_GPIO_OUTPUT_EN | PIN_GPIO_HIGH | PIN_PUSHPULL | PIN_DRVSTR_MAX,
@@ -83,6 +96,19 @@ void movavg(float *fromArray, float *destArray) {
     destArray[dataIndex] = avg / AVG_WIN_SIZE;
 }
 
+Void buzzerFxn(UArg arg0, UArg arg1) {
+
+    while (1) {
+        if (programState == RECEIVING_DATA) {
+            buzzerOpen(hBuzzer);
+            buzzerSetFrequency(buzzerFreq);
+            delay(buzzerDelay);
+            buzzerClose();
+        }
+        delay(100);
+    }
+}
+
 Void clkFxn(UArg arg0) {
    // Clock tick = 10us
    time = Clock_getTicks() / 100; // Time in milliseconds
@@ -101,8 +127,29 @@ void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
 
     } else if (pinId == Board_BUTTON1) {
         PIN_setOutputValue(ledHandle, Board_LED1, !PIN_getOutputValue(Board_LED1));
+        sprintf(debugString, " \r\n\0");
+        programState = SENDING_DATA;
     }
 }
+
+/*
+void receiveFxn(UART_Handle handle, void *rxBuf, size_t len) {
+    programState = RECEIVING_DATA
+    if (rxBuf[0] == '.') {
+        buzzerFreq = 5000;
+        buzzerDelay = 100;
+    }
+    if (rxBuf[0] == '-') {
+        buzzerFreq = 2500;
+        buzzerDelay = 300;
+    }
+    if (rxBuf[0] == ' ') {
+        buzzerFreq = 500;
+        buzzerDelay = 700;
+    }
+    UART_read(handle, rxBuf, 1);
+}
+*/
 
 Void uartTaskFxn(UArg arg0, UArg arg1) {
 
@@ -114,7 +161,8 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
     uartParams.writeDataMode = UART_DATA_TEXT;
     uartParams.readDataMode = UART_DATA_TEXT;
     uartParams.readEcho = UART_ECHO_OFF;
-    uartParams.readMode = UART_MODE_BLOCKING;
+    uartParams.readMode = UART_MODE_CALLBACK;
+    //uartParams.readCallback = &receiveFxn;
     uartParams.baudRate = 9600;
     uartParams.dataLength = UART_LEN_8;
     uartParams.parityType = UART_PAR_NONE;
@@ -126,6 +174,7 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
         System_abort("Error in opening UART");
     }
 
+    //UART_read(handle, rxBuf, 1);
     while (1) {
         if(programState == SENDING_DATA) {
             // Send light sensor data string with UART
@@ -135,9 +184,10 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
                 programState = READING_DATA;
             }
         }
+        if (programState)
 
         // Once per second, you can modify this
-        delay(1);
+        delay(100);
     }
 }
 
@@ -199,21 +249,32 @@ Void mpuTaskFxn(UArg arg0, UArg arg1) {
                             motionData[3][dataIndex],
                             motionData[4][dataIndex],
                             motionData[5][dataIndex]);
-                */
+
                 sprintf(debugString, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n\r", time, motionData[0][dataIndex],
                             motionData[1][dataIndex],
                             motionData[2][dataIndex],
                             motionData[3][dataIndex],
                             motionData[4][dataIndex],
                             motionData[5][dataIndex]);
-                if (PIN_getOutputValue(Board_LED0)) {
+                */
+                if (motionData[1][dataIndex] > 0.8) {
+                    //sprintf(debugString, ". %.2f\r\n\0", motionData[2][dataIndex]);
+                    sprintf(debugString, ".\r\n\0" );
                     programState = SENDING_DATA;
+                    delay(700);
+
+                }
+                if (motionData[1][dataIndex] < -0.9) {
+                    //sprintf(debugString, "- %.2f\r\n\0", motionData[2][dataIndex]);
+                    sprintf(debugString, "-\r\n\0");
+                    programState = SENDING_DATA;
+                    delay(700);
                 }
                 dataIndex = (dataIndex + 1) % NUM_SAMPLES;
             }
         }
 
-        delay(1); // Sleep 10ms
+        delay(1); // Sleep 1ms
     }
 }
 
@@ -222,10 +283,15 @@ Int main(void) {
     // Task variables
     Task_Handle mpuTaskHandle;
     Task_Params mpuTaskParams;
+
     Task_Handle uartTaskHandle;
     Task_Params uartTaskParams;
+
     Clock_Handle clkHandle;
     Clock_Params clkParams;
+
+    Task_Handle buzzerTaskHandle;
+    Task_Params buzzerParams;
 
     // Initialize board
     Board_initGeneral();
@@ -241,6 +307,13 @@ Int main(void) {
     // 1 000 000 = s
     clkParams.period = (CLOCK_PERIOD*1000) / Clock_tickPeriod;
     clkParams.startFlag = TRUE;
+
+
+    // Initialize Buzzer handle
+    hBuzzer = PIN_open(&sBuzzer, cBuzzer);
+    if (hBuzzer == NULL) {
+      System_abort("Buzzer pin failed to open!");
+    }
 
     // Open LED handle
     ledHandle = PIN_open(&ledState, ledConfig);
@@ -263,6 +336,15 @@ Int main(void) {
     // Create interrupt button handle
     if (PIN_registerIntCb(buttonHandle, &buttonFxn) != 0) {
        System_abort("Error registering button callback function");
+    }
+
+    // Create Buzzer task
+    Task_Params_init(&buzzerParams);
+    buzzerParams.stackSize = STACKSIZE;
+    buzzerParams.stack = &buzzerStack;
+    buzzerTaskHandle = Task_create((Task_FuncPtr)buzzerFxn, &buzzerParams, NULL);
+    if (buzzerTaskHandle == NULL) {
+      System_abort("Buzzer task create failed!");
     }
 
     // Initialize MPU task parameters and create MPU task handle
