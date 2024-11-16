@@ -30,24 +30,25 @@ Char uartTaskStack[STACKSIZE];
 Char buzzerStack[STACKSIZE];
 
 // Definition of the state machine
-enum state {INTERFACE = 1, SENDING_DATA, OFF, READING_DATA, RECEIVING_DATA};
+enum state {INTERFACE = 1, SENDING_DATA, WAITING, READING_DATA, RECEIVING_DATA, DATA_READY};
 enum state programState = INTERFACE;
 
 // Global variable for ambient light
-#define NUM_SAMPLES 20 // Number of samples to read for motion analysis
-#define AVG_WIN_SIZE 10 // Window size for calculation averages
+#define NUM_SAMPLES 20 // Max number of samples in motion data
+#define AVG_WIN_SIZE 10 // Window size for calculation averages from raw data
 #define CLOCK_PERIOD 10 // Clock task interrupt period in milliseconds
+#define READ_WAIT 2000  // Wait time (ms) after last read character before repeating message to user
 
-uint8_t uartBuffer[300];
+char txBuffer[4];
+char rxBuffer[1];
+char message[1000];
+uint16_t msgIndex = 0;
 float rawData[6][AVG_WIN_SIZE];
 float motionData[6][NUM_SAMPLES];
-char debugString[1000];
 uint8_t dataIndex = 0;
 uint8_t rawDataIndex = 0;
 uint32_t time = 0;
-uint16_t buzzerFreq = 100;
-uint16_t buzzerDelay = 500;
-
+uint32_t dataReadyTime = 0;
 
 // pins RTOS-variables and configuration here
 static PIN_Handle buttonHandle;
@@ -92,18 +93,39 @@ void movavg(float *fromArray, float *destArray) {
     while (i < AVG_WIN_SIZE) {
         avg += fromArray[i];
         i++;
-   }
+    }
     destArray[dataIndex] = avg / AVG_WIN_SIZE;
 }
 
 Void buzzerFxn(UArg arg0, UArg arg1) {
-
     while (1) {
-        if (programState == RECEIVING_DATA) {
-            buzzerOpen(hBuzzer);
-            buzzerSetFrequency(buzzerFreq);
-            delay(buzzerDelay);
-            buzzerClose();
+        if (programState == DATA_READY) {
+            message[msgIndex] = '\0';
+            uint16_t i = 0;
+            for(; i < msgIndex; i++) {
+                if (message[i] == '.') {
+                    buzzerOpen(hBuzzer);
+                    buzzerSetFrequency(8000);
+                    delay(200);
+                    buzzerClose();
+                }
+                else if (message[i] == '-') {
+                    buzzerOpen(hBuzzer);
+                    buzzerSetFrequency(1000);
+                    delay(600);
+                    buzzerClose();
+                }
+                else if (message[i] == ' ') {
+                    buzzerOpen(hBuzzer);
+                    buzzerSetFrequency(100);
+                    delay(1400);
+                    buzzerClose();
+                }
+                delay(400);
+            }
+            msgIndex = 0;
+            PIN_setOutputValue(ledHandle, Board_LED1, 0);
+            programState = INTERFACE;
         }
         delay(100);
     }
@@ -112,44 +134,58 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
 Void clkFxn(UArg arg0) {
    // Clock tick = 10us
    time = Clock_getTicks() / 100; // Time in milliseconds
+   if (programState == RECEIVING_DATA || (dataReadyTime == 0  && programState == WAITING)) {
+       dataReadyTime = time;
+   }
+   if (dataReadyTime != 0) {
+       if (time < dataReadyTime || (time - dataReadyTime) > READ_WAIT) {
+           programState = DATA_READY;
+           dataReadyTime = 0;
+       }
+   }
 }
 
 
 void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
     if (pinId == Board_BUTTON0) {
         if (programState == INTERFACE) {
-            PIN_setOutputValue(ledHandle, Board_LED0, !PIN_getOutputValue(Board_LED0));
+            PIN_setOutputValue(ledHandle, Board_LED0, 1);
             programState = READING_DATA;
-        } else if (programState == READING_DATA || programState == SENDING_DATA) {
-            PIN_setOutputValue(ledHandle, Board_LED0, !PIN_getOutputValue(Board_LED0));
+        } else if (programState == READING_DATA) {
+            PIN_setOutputValue(ledHandle, Board_LED0, 0);
             programState = INTERFACE;
         }
 
     } else if (pinId == Board_BUTTON1) {
+        if (programState == READING_DATA) {
+            sprintf(txBuffer, " \r\n\0");
+            programState = SENDING_DATA;
+        }
         PIN_setOutputValue(ledHandle, Board_LED1, !PIN_getOutputValue(Board_LED1));
-        sprintf(debugString, " \r\n\0");
-        programState = SENDING_DATA;
     }
 }
 
-/*
-void receiveFxn(UART_Handle handle, void *rxBuf, size_t len) {
-    programState = RECEIVING_DATA
-    if (rxBuf[0] == '.') {
-        buzzerFreq = 5000;
-        buzzerDelay = 100;
+
+void readCallback(UART_Handle uart, void *buffer, size_t len) {
+    char *receivedMsg = (char *)buffer;;
+    programState = RECEIVING_DATA;
+
+    if (PIN_getOutputValue(Board_LED1) == 0) {
+        PIN_setOutputValue(ledHandle, Board_LED1, 1);
     }
-    if (rxBuf[0] == '-') {
-        buzzerFreq = 2500;
-        buzzerDelay = 300;
+    if (receivedMsg[0] == ' ' || receivedMsg[0] == '-' || receivedMsg[0] == '.') {
+        message[msgIndex] = receivedMsg[0];
+        msgIndex++;
     }
-    if (rxBuf[0] == ' ') {
-        buzzerFreq = 500;
-        buzzerDelay = 700;
-    }
-    UART_read(handle, rxBuf, 1);
+    programState = WAITING;
+    UART_read(uart, rxBuffer, 1);
 }
-*/
+
+
+void writeCallback(UART_Handle uart, void *buffer, size_t len) {
+    programState = READING_DATA;
+}
+
 
 Void uartTaskFxn(UArg arg0, UArg arg1) {
 
@@ -159,33 +195,35 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
     // Initialize UART parameters
     UART_Params_init(&uartParams);
     uartParams.writeDataMode = UART_DATA_TEXT;
+    uartParams.writeMode = UART_MODE_CALLBACK;
+    uartParams.writeCallback = writeCallback;
     uartParams.readDataMode = UART_DATA_TEXT;
     uartParams.readEcho = UART_ECHO_OFF;
     uartParams.readMode = UART_MODE_CALLBACK;
-    //uartParams.readCallback = &receiveFxn;
+    uartParams.readCallback = readCallback;
     uartParams.baudRate = 9600;
     uartParams.dataLength = UART_LEN_8;
     uartParams.parityType = UART_PAR_NONE;
     uartParams.stopBits = UART_STOP_ONE;
 
     // Open connection to the device with default port Board_UART0
-    uart = UART_open(Board_UART0, &uartParams);
+    uart = UART_open(Board_UART, &uartParams);
     if (uart == NULL) {
         System_abort("Error in opening UART");
     }
+    UART_read(uart, rxBuffer, 1);
 
-    //UART_read(handle, rxBuf, 1);
     while (1) {
         if(programState == SENDING_DATA) {
-            // Send light sensor data string with UART
-            UART_write(uart, debugString, strlen(debugString));
-
-            if (PIN_getOutputValue(Board_LED0)) {
-                programState = READING_DATA;
+            PIN_setOutputValue(ledHandle, Board_LED0, 0);
+            // Send data string with UART
+            int8_t wCode = UART_write(uart, txBuffer, strlen(txBuffer));
+            if (wCode < 0) {
+                System_abort("Error in UART_write\n");
             }
+            delay(250);
+            PIN_setOutputValue(ledHandle, Board_LED0, 1);
         }
-        if (programState)
-
         // Once per second, you can modify this
         delay(100);
     }
@@ -242,38 +280,21 @@ Void mpuTaskFxn(UArg arg0, UArg arg1) {
                 for(;i < 6; i++) {
                     movavg(rawData[i],motionData[i]);
                 }
-                /*
-                sprintf(debugString, "Time:%d, index:%d, Data: %.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n\r", time, dataIndex, motionData[0][dataIndex],
-                            motionData[1][dataIndex],
-                            motionData[2][dataIndex],
-                            motionData[3][dataIndex],
-                            motionData[4][dataIndex],
-                            motionData[5][dataIndex]);
-
-                sprintf(debugString, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n\r", time, motionData[0][dataIndex],
-                            motionData[1][dataIndex],
-                            motionData[2][dataIndex],
-                            motionData[3][dataIndex],
-                            motionData[4][dataIndex],
-                            motionData[5][dataIndex]);
-                */
                 if (motionData[1][dataIndex] > 0.8) {
                     //sprintf(debugString, ". %.2f\r\n\0", motionData[2][dataIndex]);
-                    sprintf(debugString, ".\r\n\0" );
+                    sprintf(txBuffer, ".\r\n\0");
                     programState = SENDING_DATA;
                     delay(700);
-
                 }
                 if (motionData[1][dataIndex] < -0.9) {
                     //sprintf(debugString, "- %.2f\r\n\0", motionData[2][dataIndex]);
-                    sprintf(debugString, "-\r\n\0");
+                    sprintf(txBuffer, "-\r\n\0");
                     programState = SENDING_DATA;
                     delay(700);
                 }
                 dataIndex = (dataIndex + 1) % NUM_SAMPLES;
             }
         }
-
         delay(1); // Sleep 1ms
     }
 }
