@@ -23,6 +23,10 @@
 #include "sensors/mpu9250.h"
 #include "buzzer.h"
 
+/* Extra header files */
+#include "message.h"
+#include "coders.h"
+
 // Task variables
 #define STACKSIZE 2048
 Char mpuTaskStack[STACKSIZE];
@@ -30,7 +34,7 @@ Char uartTaskStack[STACKSIZE];
 Char buzzerStack[STACKSIZE];
 
 // Definition of the state machine
-enum state {INTERFACE = 1, SENDING_DATA, WAITING, READING_DATA, RECEIVING_DATA, DATA_READY};
+enum state {INTERFACE=0, SENDING_DATA, WAITING, READING_DATA, RECEIVING_DATA, DATA_READY};
 enum state programState = INTERFACE;
 
 // Global variable for ambient light
@@ -41,8 +45,8 @@ enum state programState = INTERFACE;
 
 char txBuffer[4];
 char rxBuffer[1];
-char message[1000];
-uint16_t msgIndex = 0;
+msg TX_MESSAGE;
+msg RX_MESSAGE;
 float rawData[6][AVG_WIN_SIZE];
 float motionData[6][NUM_SAMPLES];
 uint8_t dataIndex = 0;
@@ -100,22 +104,21 @@ void movavg(float *fromArray, float *destArray) {
 Void buzzerFxn(UArg arg0, UArg arg1) {
     while (1) {
         if (programState == DATA_READY) {
-            message[msgIndex] = '\0';
             uint16_t i = 0;
-            for(; i < msgIndex; i++) {
-                if (message[i] == '.') {
+            for(; i < RX_MESSAGE.count; i++) {
+                if (RX_MESSAGE.data[i] == '.') {
                     buzzerOpen(hBuzzer);
                     buzzerSetFrequency(8000);
                     delay(200);
                     buzzerClose();
                 }
-                else if (message[i] == '-') {
+                else if (RX_MESSAGE.data[i] == '-') {
                     buzzerOpen(hBuzzer);
                     buzzerSetFrequency(1000);
                     delay(600);
                     buzzerClose();
                 }
-                else if (message[i] == ' ') {
+                else if (RX_MESSAGE.data[i] == ' ') {
                     buzzerOpen(hBuzzer);
                     buzzerSetFrequency(100);
                     delay(1400);
@@ -123,7 +126,7 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
                 }
                 delay(400);
             }
-            msgIndex = 0;
+            msgClear(&RX_MESSAGE);
             PIN_setOutputValue(ledHandle, Board_LED1, 0);
             programState = INTERFACE;
         }
@@ -167,15 +170,14 @@ void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
 
 
 void readCallback(UART_Handle uart, void *buffer, size_t len) {
-    char *receivedMsg = (char *)buffer;;
+    char *receivedChr = (char *)buffer;
     programState = RECEIVING_DATA;
 
     if (PIN_getOutputValue(Board_LED1) == 0) {
         PIN_setOutputValue(ledHandle, Board_LED1, 1);
     }
-    if (receivedMsg[0] == ' ' || receivedMsg[0] == '-' || receivedMsg[0] == '.') {
-        message[msgIndex] = receivedMsg[0];
-        msgIndex++;
+    if (receivedChr[0] == ' ' || receivedChr[0] == '-' || receivedChr[0] == '.') {
+        msgAppend(&RX_MESSAGE, receivedChr[0]);
     }
     programState = WAITING;
     UART_read(uart, rxBuffer, 1);
@@ -325,10 +327,12 @@ Int main(void) {
 
     // Initialize clock
     Clock_Params_init(&clkParams);
-    // 1 000 000 = s
     clkParams.period = (CLOCK_PERIOD*1000) / Clock_tickPeriod;
     clkParams.startFlag = TRUE;
 
+    // Initialize message structs
+    msgInit(&TX_MESSAGE);
+    msgInit(&RX_MESSAGE);
 
     // Initialize Buzzer handle
     hBuzzer = PIN_open(&sBuzzer, cBuzzer);
@@ -395,5 +399,7 @@ Int main(void) {
     // Start BIOS
     BIOS_start();
 
+    msgDestroy(&TX_MESSAGE);
+    msgDestroy(&RX_MESSAGE);
     return (0);
 }
