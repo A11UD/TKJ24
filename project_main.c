@@ -37,31 +37,53 @@ Char buzzerStack[STACKSIZE];
 enum state {INTERFACE=0, SENDING_DATA, WAITING, READING_DATA, RECEIVING_DATA, DATA_READY};
 enum state programState = INTERFACE;
 
-// Global variable for ambient light
+// Constants
 #define NUM_SAMPLES 20 // Max number of samples in motion data
 #define AVG_WIN_SIZE 10 // Window size for calculation averages from raw data
 #define CLOCK_PERIOD 10 // Clock task interrupt period in milliseconds
 #define READ_WAIT 2000  // Wait time (ms) after last read character before repeating message to user
 
+// Buffers
 char txBuffer[4];
 char rxBuffer[1];
 msg TX_MESSAGE;
 msg RX_MESSAGE;
+
+// Arrays
 float rawData[6][AVG_WIN_SIZE];
 float motionData[6][NUM_SAMPLES];
+/* Data = [[ax_1, ax_2, ax_3, ...],
+ *         [ay_1, ay_2, ay_3, ...],
+ *         [az_1, az_2, az_3, ...],
+ *         [gx_1, gx_2, gx_3, ...],
+ *         [gy_1, gy_2, gy_3, ...],
+ *         [gz_1, gz_2, gz_3, ...]]
+ */
+uint32_t times[NUM_SAMPLES];
+uint32_t maxTimes[6];
+uint32_t minTimes[6];
+float maxValues[6];
+float minValues[6];
+
+// Variables
 uint8_t dataIndex = 0;
 uint8_t rawDataIndex = 0;
 uint32_t time = 0;
 uint32_t dataReadyTime = 0;
+uint8_t dataReadyNum = 0;
 
 // pins RTOS-variables and configuration here
-static PIN_Handle buttonHandle;
-static PIN_State buttonState;
+static PIN_Handle button0Handle;
+static PIN_State button0State;
+static PIN_Handle button1Handle;
+static PIN_State button1State;
 static PIN_Handle ledHandle;
 static PIN_State ledState;
 static PIN_Handle mpuHandle;
 static PIN_Handle hBuzzer;
 static PIN_State sBuzzer;
+static UART_Handle uart;
+static UART_Params uartParams;
 
 PIN_Config cBuzzer[] = {
   Board_BUZZER | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX,
@@ -73,9 +95,18 @@ PIN_Config mpuPinConfig[] = {
     PIN_TERMINATE
 };
 
-PIN_Config buttonConfig[] = {
+PIN_Config button0Config[] = {
    Board_BUTTON0 | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE,
+   PIN_TERMINATE
+};
+
+PIN_Config button1Config[] = {
    Board_BUTTON1 | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE,
+   PIN_TERMINATE
+};
+
+PIN_Config powerButtonWakeConfig[] = {
+   Board_BUTTON1 | PIN_INPUT_EN | PIN_PULLUP | PINCC26XX_WAKEUP_NEGEDGE,
    PIN_TERMINATE
 };
 
@@ -99,6 +130,54 @@ void movavg(float *fromArray, float *destArray) {
         i++;
     }
     destArray[dataIndex] = avg / AVG_WIN_SIZE;
+}
+
+void getMaxMin() {
+    uint8_t i = 0;
+    uint8_t j = 0;
+    for (; i < 6; i++) {
+        j = 0;
+        for (; j < NUM_SAMPLES; j++) {
+            if (j == 0) {
+                maxValues[i] = motionData[i][j];
+                minValues[i] = motionData[i][j];
+                continue;
+            }
+            if (motionData[i][j] > maxValues[i]) {
+                maxValues[i] = motionData[i][j];
+                maxTimes[i] = times[j];
+            }
+            if (motionData[i][j] < minValues[i]) {
+                minValues[i] = motionData[i][j];
+                minTimes[i] = times[j];
+            }
+        }
+    }
+}
+
+uint8_t checkMoves() {
+    getMaxMin();
+    // Turn to left
+    if (maxValues[1] > 0.6 && minValues[2] < 0.4) {
+        if (maxValues[3] > 90.0 && minValues[3] < -90.0) {
+            if (maxTimes[3] < minTimes[3]) {
+                sprintf(txBuffer, ".\r\n\0");
+                programState = SENDING_DATA;
+                return 1;
+            }
+        }
+    }
+    // Turn to right
+    if (minValues[1] < -0.6 && minValues[2] < 0.4) {
+        if (maxValues[3] > 90.0 && minValues[3] < -90.0) {
+            if (maxTimes[3] > minTimes[3]) {
+                sprintf(txBuffer, "-\r\n\0");
+                programState = SENDING_DATA;
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 Void buzzerFxn(UArg arg0, UArg arg1) {
@@ -148,8 +227,27 @@ Void clkFxn(UArg arg0) {
    }
 }
 
+Void button1Fxn(PIN_Handle handle, PIN_Id pinId) {
+    if (programState == INTERFACE) {
+        /*
+        PIN_setOutputValue(ledHandle, Board_LED1, 1);
+        msgDestroy(&TX_MESSAGE);
+        msgDestroy(&RX_MESSAGE);
 
-void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
+        delay(500);
+
+        PIN_close(button1Handle);
+        PIN_setOutputValue(ledHandle, Board_LED1, 0);
+        PINCC26XX_setWakeup(powerButtonWakeConfig);
+        Power_shutdown(NULL,0);
+        */
+    } else if (programState == READING_DATA) {
+        sprintf(txBuffer, " \r\n\0");
+        programState = SENDING_DATA;
+    }
+}
+
+void button0Fxn(PIN_Handle handle, PIN_Id pinId) {
     if (pinId == Board_BUTTON0) {
         if (programState == INTERFACE) {
             PIN_setOutputValue(ledHandle, Board_LED0, 1);
@@ -158,16 +256,8 @@ void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
             PIN_setOutputValue(ledHandle, Board_LED0, 0);
             programState = INTERFACE;
         }
-
-    } else if (pinId == Board_BUTTON1) {
-        if (programState == READING_DATA) {
-            sprintf(txBuffer, " \r\n\0");
-            programState = SENDING_DATA;
-        }
-        PIN_setOutputValue(ledHandle, Board_LED1, !PIN_getOutputValue(Board_LED1));
     }
 }
-
 
 void readCallback(UART_Handle uart, void *buffer, size_t len) {
     char *receivedChr = (char *)buffer;
@@ -190,9 +280,6 @@ void writeCallback(UART_Handle uart, void *buffer, size_t len) {
 
 
 Void uartTaskFxn(UArg arg0, UArg arg1) {
-
-    UART_Handle uart;
-    UART_Params uartParams;
 
     // Initialize UART parameters
     UART_Params_init(&uartParams);
@@ -219,9 +306,9 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
         if(programState == SENDING_DATA) {
             PIN_setOutputValue(ledHandle, Board_LED0, 0);
             // Send data string with UART
-            int8_t wCode = UART_write(uart, txBuffer, strlen(txBuffer));
-            if (wCode < 0) {
-                System_abort("Error in UART_write\n");
+            int8_t wBytes = UART_write(uart, txBuffer, strlen(txBuffer));
+            if (wBytes < 0) {
+                System_abort("Error in UART_write!");
             }
             delay(250);
             PIN_setOutputValue(ledHandle, Board_LED0, 1);
@@ -255,7 +342,7 @@ Void mpuTaskFxn(UArg arg0, UArg arg1) {
     // Open I2C connection
     i2cMPU = I2C_open(Board_I2C, &i2cMPUParams);
     if (i2cMPU == NULL) {
-        System_abort("Error on initializing I2CMPU");
+        System_abort("Error on initializing I2CMPU!");
     }
 
     // Setup the OPT3001 sensor for use
@@ -278,23 +365,20 @@ Void mpuTaskFxn(UArg arg0, UArg arg1) {
                              &rawData[5][rawDataIndex]);
             rawDataIndex = (rawDataIndex + 1) % AVG_WIN_SIZE;
             if (rawDataIndex == 0) {
+                if (dataReadyNum < 20) {
+                    dataReadyNum++;
+                }
                 uint8_t i = 0;
                 for(;i < 6; i++) {
-                    movavg(rawData[i],motionData[i]);
+                    movavg(rawData[i], motionData[i]);
                 }
-                if (motionData[1][dataIndex] > 0.8) {
-                    //sprintf(debugString, ". %.2f\r\n\0", motionData[2][dataIndex]);
-                    sprintf(txBuffer, ".\r\n\0");
-                    programState = SENDING_DATA;
-                    delay(700);
-                }
-                if (motionData[1][dataIndex] < -0.9) {
-                    //sprintf(debugString, "- %.2f\r\n\0", motionData[2][dataIndex]);
-                    sprintf(txBuffer, "-\r\n\0");
-                    programState = SENDING_DATA;
-                    delay(700);
-                }
+                times[dataIndex] = time;
                 dataIndex = (dataIndex + 1) % NUM_SAMPLES;
+                if (dataIndex % 5 == 0 && dataReadyNum >= 20) {
+                    if (checkMoves() == 1) {
+                        dataReadyNum = 0;
+                    }
+                }
             }
         }
         delay(1); // Sleep 1ms
@@ -337,31 +421,43 @@ Int main(void) {
     // Initialize Buzzer handle
     hBuzzer = PIN_open(&sBuzzer, cBuzzer);
     if (hBuzzer == NULL) {
-      System_abort("Buzzer pin failed to open!");
+      System_abort("Error buzzer pin failed to open!");
     }
 
     // Open LED handle
     ledHandle = PIN_open(&ledState, ledConfig);
     if(!ledHandle) {
-       System_abort("Error initializing LED pin\n");
+       System_abort("Error initializing LED pin!");
     }
 
     // Create clock handle
     clkHandle = Clock_create((Clock_FuncPtr)clkFxn, clkParams.period, &clkParams, NULL);
     if (clkHandle == NULL) {
-       System_abort("Clock create failed");
+       System_abort("Error clock creation failed!");
     }
 
-    // Create button handle
-    buttonHandle = PIN_open(&buttonState, buttonConfig);
-    if(!buttonHandle) {
-       System_abort("Error initializing button pin\n");
+    // Create button0 handle
+    button0Handle = PIN_open(&button0State, button0Config);
+    if(!button0Handle) {
+       System_abort("Error initializing button0 pin!");
     }
 
-    // Create interrupt button handle
-    if (PIN_registerIntCb(buttonHandle, &buttonFxn) != 0) {
-       System_abort("Error registering button callback function");
+    // Register interrupt function for button0
+    if (PIN_registerIntCb(button0Handle, &button0Fxn) != 0) {
+       System_abort("Error registering button0 callback function!");
     }
+
+    // Create button1 handle
+    button1Handle = PIN_open(&button1State, button1Config);
+    if(!button1Handle) {
+       System_abort("Error initializing button1 pin!");
+    }
+
+    // Register interrupt function for button1
+    if (PIN_registerIntCb(button1Handle, &button1Fxn) != 0) {
+       System_abort("Error registering button1 callback function!");
+    }
+
 
     // Create Buzzer task
     Task_Params_init(&buzzerParams);
@@ -369,7 +465,7 @@ Int main(void) {
     buzzerParams.stack = &buzzerStack;
     buzzerTaskHandle = Task_create((Task_FuncPtr)buzzerFxn, &buzzerParams, NULL);
     if (buzzerTaskHandle == NULL) {
-      System_abort("Buzzer task create failed!");
+      System_abort("Error buzzer task creation failed!");
     }
 
     // Initialize MPU task parameters and create MPU task handle
@@ -379,7 +475,7 @@ Int main(void) {
     mpuTaskParams.priority = 2;
     mpuTaskHandle = Task_create(mpuTaskFxn, &mpuTaskParams, NULL);
     if (mpuTaskHandle == NULL) {
-        System_abort("MPU Task creation failed!");
+        System_abort("Error MPU task creation failed!");
     }
 
     // Initialize UART task parameters and create UART task handle
@@ -389,7 +485,7 @@ Int main(void) {
     uartTaskParams.priority = 2;
     uartTaskHandle = Task_create(uartTaskFxn, &uartTaskParams, NULL);
     if (uartTaskHandle == NULL) {
-        System_abort("UART Task creation failed!");
+        System_abort("Error UART task creation failed!");
     }
 
     // Sanity check
@@ -399,7 +495,5 @@ Int main(void) {
     // Start BIOS
     BIOS_start();
 
-    msgDestroy(&TX_MESSAGE);
-    msgDestroy(&RX_MESSAGE);
     return (0);
 }
