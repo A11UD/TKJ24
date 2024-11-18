@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "message.h"
+#include "coders.h"
 
 # define TABLE_LEN 36
 # define MAX_SYMBOL_LEN 5
