@@ -41,7 +41,7 @@ enum state programState = INTERFACE;
 #define NUM_SAMPLES 20 // Max number of samples in motion data
 #define AVG_WIN_SIZE 10 // Window size for calculation averages from raw data
 #define CLOCK_PERIOD 10 // Clock task interrupt period in milliseconds
-#define READ_WAIT 8000  // Wait time (ms) after last read character before repeating message to user
+#define READ_WAIT 2000  // Wait time (ms) after last read character before repeating message to user
 
 // Buffers
 char txBuffer[4];
@@ -66,7 +66,7 @@ uint32_t maxTimes[6];
 uint32_t minTimes[6];
 float maxValues[6];
 float minValues[6];
-const char mario[] = {"--.-.-...---"};
+const char *mario = "--.-.-...---";
 
 typedef struct Note {
     uint16_t frequency;
@@ -144,6 +144,10 @@ static const I2CCC26XX_I2CPinCfg i2cMPUCfg = {
 };
 
 uint8_t isSong() {
+    char tmp[100];
+    sprintf(tmp, "%d", RX_MESSAGE.count);
+    System_printf(tmp);
+    System_printf("\n");
     if (RX_MESSAGE.count == 13) {
         uint8_t i = 0;
         for (; i < RX_MESSAGE.count; i++) {
@@ -220,11 +224,10 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
             uint16_t i = 0;
             System_printf(RX_MESSAGE.data);
             System_printf("\n");
-            //test[testI] = '\0';
-            //System_printf(test);
-            //System_printf("\n");
             System_flush();
-            if (isSong()) {
+            //uint8_t song = isSong();
+            /*
+            if (song == 1) {
                 uint16_t noteCount = sizeof(song) / sizeof(song[0]);
                 for (; i < noteCount; i++) {
                     if (song[i].frequency == 0) {
@@ -237,28 +240,27 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
                     }
                     delay(50);
                 }
-            } else {
-                for(; i < RX_MESSAGE.count; i++) {
-                    if (RX_MESSAGE.data[i] == '.') {
-                        buzzerOpen(hBuzzer);
-                        buzzerSetFrequency(8000);
-                        delay(200);
-                        buzzerClose();
-                    }
-                    else if (RX_MESSAGE.data[i] == '-') {
-                        buzzerOpen(hBuzzer);
-                        buzzerSetFrequency(2500);
-                        delay(600);
-                        buzzerClose();
-                    }
-                    else if (RX_MESSAGE.data[i] == ' ') {
-                        buzzerOpen(hBuzzer);
-                        buzzerSetFrequency(1000);
-                        delay(1400);
-                        buzzerClose();
-                    }
-                    delay(400);
+            }*/
+            for(; i < RX_MESSAGE.count; i++) {
+                if (RX_MESSAGE.data[i] == '.') {
+                    buzzerOpen(hBuzzer);
+                    buzzerSetFrequency(8000);
+                    delay(200);
+                    buzzerClose();
                 }
+                else if (RX_MESSAGE.data[i] == '-') {
+                    buzzerOpen(hBuzzer);
+                    buzzerSetFrequency(2500);
+                    delay(600);
+                    buzzerClose();
+                }
+                else if (RX_MESSAGE.data[i] == ' ') {
+                    buzzerOpen(hBuzzer);
+                    buzzerSetFrequency(1000);
+                    delay(1400);
+                    buzzerClose();
+                }
+                delay(400);
             }
             msgClear(&RX_MESSAGE);
             PIN_setOutputValue(ledHandle, Board_LED1, 0);
@@ -283,20 +285,8 @@ Void clkFxn(UArg arg0) {
 }
 
 Void button1Fxn(PIN_Handle handle, PIN_Id pinId) {
-    if (programState == INTERFACE) {
-        /*
-        PIN_setOutputValue(ledHandle, Board_LED1, 1);
-        msgDestroy(&TX_MESSAGE);
-        msgDestroy(&RX_MESSAGE);
 
-        delay(500);
-
-        PIN_close(button1Handle);
-        PIN_setOutputValue(ledHandle, Board_LED1, 0);
-        PINCC26XX_setWakeup(powerButtonWakeConfig);
-        Power_shutdown(NULL,0);
-        */
-    } else if (programState == READING_DATA) {
+    if (programState == READING_DATA) {
         sprintf(txBuffer, " \r\n\0");
         programState = SENDING_DATA;
     }
@@ -327,6 +317,7 @@ void readCallback(UART_Handle uart, void *buffer, size_t len) {
         testI++;
     }
     programState = WAITING;
+    dataReadyTime = time;
     UART_read(uart, rxBuffer, 1);
 }
 
@@ -363,7 +354,7 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
         if(programState == SENDING_DATA) {
             PIN_setOutputValue(ledHandle, Board_LED0, 0);
             // Send data string with UART
-            int8_t wBytes = UART_write(uart, txBuffer, strlen(txBuffer));
+            int8_t wBytes = UART_write(uart, txBuffer, 4);
             if (wBytes < 0) {
                 System_abort("Error in UART_write!");
             }
