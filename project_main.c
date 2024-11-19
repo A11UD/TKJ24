@@ -41,13 +41,15 @@ enum state programState = INTERFACE;
 #define NUM_SAMPLES 20 // Max number of samples in motion data
 #define AVG_WIN_SIZE 10 // Window size for calculation averages from raw data
 #define CLOCK_PERIOD 10 // Clock task interrupt period in milliseconds
-#define READ_WAIT 2000  // Wait time (ms) after last read character before repeating message to user
+#define READ_WAIT 8000  // Wait time (ms) after last read character before repeating message to user
 
 // Buffers
 char txBuffer[4];
-char rxBuffer[1];
+char rxBuffer[10];
 msg TX_MESSAGE;
 msg RX_MESSAGE;
+char test[100];
+uint8_t testI = 0;
 
 // Arrays
 float rawData[6][AVG_WIN_SIZE];
@@ -64,6 +66,25 @@ uint32_t maxTimes[6];
 uint32_t minTimes[6];
 float maxValues[6];
 float minValues[6];
+const char mario[] = {"--.-.-...---"};
+
+typedef struct Note {
+    uint16_t frequency;
+    uint16_t duration; // In milliseconds
+} Note;
+
+// ChatGPT provided notes
+Note song[] = {{659, 150}, // E5
+               {659, 150}, // E5
+               {0,   150}, // REST
+               {659, 150}, // E5
+               {0,   150}, // REST
+               {523, 150}, // C5
+               {659, 150}, // E5
+               {0,   150}, // REST
+               {784, 300}, // G5
+               {0,   300}, // REST
+               {392, 300}};// G4
 
 // Variables
 uint8_t dataIndex = 0;
@@ -121,6 +142,19 @@ static const I2CCC26XX_I2CPinCfg i2cMPUCfg = {
     .pinSDA = Board_I2C0_SDA1,
     .pinSCL = Board_I2C0_SCL1
 };
+
+uint8_t isSong() {
+    if (RX_MESSAGE.count == 13) {
+        uint8_t i = 0;
+        for (; i < RX_MESSAGE.count; i++) {
+            if (RX_MESSAGE.data[i] != mario[i]) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+    return 0;
+}
 
 void movavg(float *fromArray, float *destArray) {
     uint8_t i = 0;
@@ -184,26 +218,47 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
     while (1) {
         if (programState == DATA_READY) {
             uint16_t i = 0;
-            for(; i < RX_MESSAGE.count; i++) {
-                if (RX_MESSAGE.data[i] == '.') {
-                    buzzerOpen(hBuzzer);
-                    buzzerSetFrequency(8000);
-                    delay(200);
-                    buzzerClose();
+            System_printf(RX_MESSAGE.data);
+            System_printf("\n");
+            //test[testI] = '\0';
+            //System_printf(test);
+            //System_printf("\n");
+            System_flush();
+            if (isSong()) {
+                uint16_t noteCount = sizeof(song) / sizeof(song[0]);
+                for (; i < noteCount; i++) {
+                    if (song[i].frequency == 0) {
+                        delay(song[i].duration);
+                    } else {
+                        buzzerOpen(hBuzzer);
+                        buzzerSetFrequency(song[i].frequency);
+                        delay(song[i].duration);
+                        buzzerClose();
+                    }
+                    delay(50);
                 }
-                else if (RX_MESSAGE.data[i] == '-') {
-                    buzzerOpen(hBuzzer);
-                    buzzerSetFrequency(1000);
-                    delay(600);
-                    buzzerClose();
+            } else {
+                for(; i < RX_MESSAGE.count; i++) {
+                    if (RX_MESSAGE.data[i] == '.') {
+                        buzzerOpen(hBuzzer);
+                        buzzerSetFrequency(8000);
+                        delay(200);
+                        buzzerClose();
+                    }
+                    else if (RX_MESSAGE.data[i] == '-') {
+                        buzzerOpen(hBuzzer);
+                        buzzerSetFrequency(2500);
+                        delay(600);
+                        buzzerClose();
+                    }
+                    else if (RX_MESSAGE.data[i] == ' ') {
+                        buzzerOpen(hBuzzer);
+                        buzzerSetFrequency(1000);
+                        delay(1400);
+                        buzzerClose();
+                    }
+                    delay(400);
                 }
-                else if (RX_MESSAGE.data[i] == ' ') {
-                    buzzerOpen(hBuzzer);
-                    buzzerSetFrequency(100);
-                    delay(1400);
-                    buzzerClose();
-                }
-                delay(400);
             }
             msgClear(&RX_MESSAGE);
             PIN_setOutputValue(ledHandle, Board_LED1, 0);
@@ -268,6 +323,8 @@ void readCallback(UART_Handle uart, void *buffer, size_t len) {
     }
     if (receivedChr[0] == ' ' || receivedChr[0] == '-' || receivedChr[0] == '.') {
         msgAppend(&RX_MESSAGE, receivedChr[0]);
+        test[testI] = receivedChr[0];
+        testI++;
     }
     programState = WAITING;
     UART_read(uart, rxBuffer, 1);
