@@ -48,8 +48,6 @@ char txBuffer[4];
 char rxBuffer[10];
 msg TX_MESSAGE;
 msg RX_MESSAGE;
-char test[100];
-uint8_t testI = 0;
 
 // Arrays
 float rawData[6][AVG_WIN_SIZE];
@@ -66,7 +64,7 @@ uint32_t maxTimes[6];
 uint32_t minTimes[6];
 float maxValues[6];
 float minValues[6];
-const char *mario = "--.-.-...---";
+const char mario[] = "--.-.-...---";
 
 typedef struct Note {
     uint16_t frequency;
@@ -148,16 +146,13 @@ uint8_t isSong() {
     sprintf(tmp, "%d", RX_MESSAGE.count);
     System_printf(tmp);
     System_printf("\n");
-    if (RX_MESSAGE.count == 13) {
-        uint8_t i = 0;
-        for (; i < RX_MESSAGE.count; i++) {
-            if (RX_MESSAGE.data[i] != mario[i]) {
-                return 0;
-            }
+    uint8_t i = 0;
+    for (; i < RX_MESSAGE.count; i++) {
+        if (RX_MESSAGE.data[i] != mario[i]) {
+            return 0;
         }
-        return 1;
     }
-    return 0;
+    return 1;
 }
 
 void movavg(float *fromArray, float *destArray) {
@@ -222,13 +217,9 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
     while (1) {
         if (programState == DATA_READY) {
             uint16_t i = 0;
-            System_printf(RX_MESSAGE.data);
-            System_printf("\n");
-            System_flush();
-            //uint8_t song = isSong();
-            /*
-            if (song == 1) {
-                uint16_t noteCount = sizeof(song) / sizeof(song[0]);
+            uint8_t c = isSong();
+            if (c == 1) {
+                uint16_t noteCount = sizeof(song) / sizeof(Note);
                 for (; i < noteCount; i++) {
                     if (song[i].frequency == 0) {
                         delay(song[i].duration);
@@ -240,27 +231,28 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
                     }
                     delay(50);
                 }
-            }*/
-            for(; i < RX_MESSAGE.count; i++) {
-                if (RX_MESSAGE.data[i] == '.') {
-                    buzzerOpen(hBuzzer);
-                    buzzerSetFrequency(8000);
-                    delay(200);
-                    buzzerClose();
+            } else {
+                for(; i < RX_MESSAGE.count; i++) {
+                    if (RX_MESSAGE.data[i] == '.') {
+                        buzzerOpen(hBuzzer);
+                        buzzerSetFrequency(8000);
+                        delay(200);
+                        buzzerClose();
+                    }
+                    else if (RX_MESSAGE.data[i] == '-') {
+                        buzzerOpen(hBuzzer);
+                        buzzerSetFrequency(2500);
+                        delay(600);
+                        buzzerClose();
+                    }
+                    else if (RX_MESSAGE.data[i] == ' ') {
+                        buzzerOpen(hBuzzer);
+                        buzzerSetFrequency(1000);
+                        delay(1400);
+                        buzzerClose();
+                    }
+                    delay(400);
                 }
-                else if (RX_MESSAGE.data[i] == '-') {
-                    buzzerOpen(hBuzzer);
-                    buzzerSetFrequency(2500);
-                    delay(600);
-                    buzzerClose();
-                }
-                else if (RX_MESSAGE.data[i] == ' ') {
-                    buzzerOpen(hBuzzer);
-                    buzzerSetFrequency(1000);
-                    delay(1400);
-                    buzzerClose();
-                }
-                delay(400);
             }
             msgClear(&RX_MESSAGE);
             PIN_setOutputValue(ledHandle, Board_LED1, 0);
@@ -313,8 +305,7 @@ void readCallback(UART_Handle uart, void *buffer, size_t len) {
     }
     if (receivedChr[0] == ' ' || receivedChr[0] == '-' || receivedChr[0] == '.') {
         msgAppend(&RX_MESSAGE, receivedChr[0]);
-        test[testI] = receivedChr[0];
-        testI++;
+
     }
     programState = WAITING;
     dataReadyTime = time;
