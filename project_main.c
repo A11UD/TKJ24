@@ -1,3 +1,15 @@
+/*
+ * project_main.c
+ *
+ *
+ *  Created on: 20.11.2024
+ *  Authors: Eemeli Kyröläinen and Aleksanteri Aska / University of Oulu
+ *
+ *  JTKJ SensorTag project for sending/receiving morse code.
+ *
+ */
+
+
 /* C Standard library */
 #include <stdio.h>
 #include <string.h>
@@ -42,14 +54,15 @@ enum state programState = INTERFACE;
 #define AVG_WIN_SIZE 10 // Window size for calculation averages from raw data
 #define CLOCK_PERIOD 10 // Clock task interrupt period in milliseconds
 #define READ_WAIT 2000  // Wait time (ms) after last read character before repeating message to user
+const char mario[] = "--.-.-...---";  // Send message "mario" via UART to play music
 
-// Buffers
+// Buffers and message structs
 char txBuffer[4];
 char rxBuffer[10];
 msg TX_MESSAGE;
 msg RX_MESSAGE;
 
-// Arrays
+// Data arrays
 float rawData[6][AVG_WIN_SIZE];
 float motionData[6][NUM_SAMPLES];
 /* Data = [[ax_1, ax_2, ax_3, ...],
@@ -64,7 +77,6 @@ uint32_t maxTimes[6];
 uint32_t minTimes[6];
 float maxValues[6];
 float minValues[6];
-const char mario[] = "--.-.-...---";
 
 typedef struct Note {
     uint16_t frequency;
@@ -72,6 +84,7 @@ typedef struct Note {
 } Note;
 
 // ChatGPT provided notes
+// with prompt: "Give me 8-bit notes for mario in Note type of struct as a list."
 Note song[] = {{659, 150}, // E5
                {659, 150}, // E5
                {0,   150}, // REST
@@ -91,7 +104,7 @@ uint32_t time = 0;
 uint32_t dataReadyTime = 0;
 uint8_t dataReadyNum = 0;
 
-// pins RTOS-variables and configuration here
+// Pins RTOS-variables and configurations
 static PIN_Handle button0Handle;
 static PIN_State button0State;
 static PIN_Handle button1Handle;
@@ -135,24 +148,23 @@ PIN_Config ledConfig[] = {
    PIN_TERMINATE
 };
 
-// MPU uses its own I2C interface
+// MPU's own I2C interface
 static const I2CCC26XX_I2CPinCfg i2cMPUCfg = {
     .pinSDA = Board_I2C0_SDA1,
     .pinSCL = Board_I2C0_SCL1
 };
 
 uint8_t isSong() {
-    char tmp[100];
-    sprintf(tmp, "%d", RX_MESSAGE.count);
-    System_printf(tmp);
-    System_printf("\n");
-    uint8_t i = 0;
-    for (; i < RX_MESSAGE.count; i++) {
-        if (RX_MESSAGE.data[i] != mario[i]) {
-            return 0;
+    if (programState == DATA_READY && RX_MESSAGE.count > 0) {
+        uint8_t i = 0;
+        for (; i < RX_MESSAGE.count; i++) {
+            if (RX_MESSAGE.data[i] != mario[i]) {
+                return 0;
+            }
         }
+        return 1;
     }
-    return 1;
+    return 0;
 }
 
 void movavg(float *fromArray, float *destArray) {
@@ -217,8 +229,7 @@ Void buzzerFxn(UArg arg0, UArg arg1) {
     while (1) {
         if (programState == DATA_READY) {
             uint16_t i = 0;
-            uint8_t c = isSong();
-            if (c == 1) {
+            if (isSong()) {
                 uint16_t noteCount = sizeof(song) / sizeof(Note);
                 for (; i < noteCount; i++) {
                     if (song[i].frequency == 0) {
@@ -277,7 +288,6 @@ Void clkFxn(UArg arg0) {
 }
 
 Void button1Fxn(PIN_Handle handle, PIN_Id pinId) {
-
     if (programState == READING_DATA) {
         sprintf(txBuffer, " \r\n\0");
         programState = SENDING_DATA;
@@ -340,14 +350,13 @@ Void uartTaskFxn(UArg arg0, UArg arg1) {
         System_abort("Error in opening UART");
     }
     UART_read(uart, rxBuffer, 1);
-
     while (1) {
         if(programState == SENDING_DATA) {
             PIN_setOutputValue(ledHandle, Board_LED0, 0);
             // Send data string with UART
             int8_t wBytes = UART_write(uart, txBuffer, 4);
             if (wBytes < 0) {
-                System_abort("Error in UART_write!");
+                System_abort("Error in UART_write");
             }
             delay(250);
             PIN_setOutputValue(ledHandle, Board_LED0, 1);
@@ -392,9 +401,7 @@ Void mpuTaskFxn(UArg arg0, UArg arg1) {
     System_flush();
 
     while (1) {
-
-        // Read sensor data and print it to the Debug window as string
-        // Save the sensor value into the global variable and modify state
+        // Read sensor data and save the sensor values into the global variable
         if(programState == READING_DATA) {
             mpu9250_get_data(&i2cMPU, &rawData[0][rawDataIndex],
                              &rawData[1][rawDataIndex],
@@ -407,14 +414,17 @@ Void mpuTaskFxn(UArg arg0, UArg arg1) {
                 if (dataReadyNum < 20) {
                     dataReadyNum++;
                 }
+                // Calculate 10 value average from raw values
                 uint8_t i = 0;
                 for(;i < 6; i++) {
                     movavg(rawData[i], motionData[i]);
                 }
                 times[dataIndex] = time;
                 dataIndex = (dataIndex + 1) % NUM_SAMPLES;
+                // Check for possible correct moves if we have atleast 20 samples
+                // after that check every fifth new samples for moves
                 if (dataIndex % 5 == 0 && dataReadyNum >= 20) {
-                    if (checkMoves() == 1) {
+                    if (checkMoves() == true) {
                         dataReadyNum = 0;
                     }
                 }
@@ -497,7 +507,6 @@ Int main(void) {
        System_abort("Error registering button1 callback function!");
     }
 
-
     // Create Buzzer task
     Task_Params_init(&buzzerParams);
     buzzerParams.stackSize = STACKSIZE;
@@ -527,12 +536,40 @@ Int main(void) {
         System_abort("Error UART task creation failed!");
     }
 
-    // Sanity check
-    System_printf("Hello world!\n");
+    // Check that encoding and decoding works correctly
+    char greeting[] = "Hello world";
+    uint8_t i = 0;
+    for(; i < (uint8_t) strlen(greeting); i++) {
+        msgAppend(&TX_MESSAGE, greeting[i]);
+    }
+    encode(TX_MESSAGE.data, &RX_MESSAGE, TX_MESSAGE.count);
+
+    System_printf("\n");
+    System_printf(greeting);
+    System_printf(" == ");
+    System_printf(RX_MESSAGE.data);
+    System_printf("\n");
+
+    msgClear(&TX_MESSAGE);
+    decode(RX_MESSAGE.data, &TX_MESSAGE, RX_MESSAGE.count);
+
+    System_printf(RX_MESSAGE.data);
+    System_printf("== ");
+    System_printf(TX_MESSAGE.data);
+    System_printf("\n");
     System_flush();
+
+    msgClear(&TX_MESSAGE);
+    msgClear(&RX_MESSAGE);
 
     // Start BIOS
     BIOS_start();
+
+    // Add these into the shutdown function
+    // to free the memory
+    // msgDestroy(&RX_MESSAGE);
+    // msgDestroy(&TX_MESSAGE);
+    // Also set message pointers to NULL
 
     return (0);
 }
