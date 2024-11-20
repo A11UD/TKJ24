@@ -27,7 +27,6 @@ typedef struct msg {
 } msg;
 
 void msgInit(msg *message);
-void msgRealloc(msg *message);
 void msgDestroy(msg *message);
 void msgClear(msg *message);
 void msgAppend(msg *message, const char chr);
