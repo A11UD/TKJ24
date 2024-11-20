@@ -24,7 +24,6 @@
 extern const char ALPHABET[TABLE_LEN];
 extern const char *MORSE_TABLE[TABLE_LEN];
 
-uint8_t get_conversion_index(char *chr, uint8_t _idx);
 void encode(char *chr, msg* message, uint16_t len);
 void decode(char *chr, msg *message, uint16_t len);
 

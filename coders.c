@@ -30,7 +30,7 @@ const char *MORSE_TABLE[TABLE_LEN] = {".-", "-...", "-.-.", "-..", ".", "..-.", 
                              "...", "-", "..-", "...-", ".--", "-..-", "-.--", "--..", ".----",
                              "..---", "...--", "....-", ".....", "-....", "--...", "---..", "----.", "-----"};
 
-uint8_t get_conversion_index(char *chr, uint8_t _idx) {
+static uint8_t get_conversion_index(char *chr, uint8_t _idx) {
     /*
      * _idx is the index of '\0' character.
      * Use _idx 0 for conversions from alphabet to morse
