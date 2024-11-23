@@ -8,9 +8,9 @@
   - Button 1 will send " " via UART
 - Device will automatically read any data send via UART and beep the received morse code
 ### Device in reading mode:
-![pics/Sensortag_interface.jpg](pics/Sensortag_reading.png)
+![pics/Sensortag_interface.png](https://github.com/A11UD/TKJ24/blob/main/pics/SensorTag_reading.png?raw=true)
 
 ### Device in reading mode:
-![pics/Sensortag_interface.jpg](pics/Sensortag_receiving.png)
+![pics/Sensortag_interface.png](https://github.com/A11UD/TKJ24/blob/main/pics/SensorTag_receiving.png?raw=true)
 
 Computer Systems Course University of Oulu 2024
